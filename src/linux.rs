@@ -1,3 +1,4 @@
+use std::ffi::CStr;
 use std::mem;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use neli::attr::Attribute;
@@ -35,7 +36,7 @@ fn make_netlink_message(ifaddrmsg: NlPayload<Ifaddrmsg>) -> Nlmsghdr<Rtm, NlPayl
 }
 
 /// Retrieves the local IP address fo this system
-pub fn local_ip() -> Result<IpAddr, Error> {
+pub fn local_ips_with_route_scope(scope: Option<RtScope>) -> Result<Vec<(String, IpAddr)>, Error> {
     let mut netlink_socket = NlSocketHandle::connect(NlFamily::Route, None, &[])
         .map_err(|err| Error::StrategyError(err.to_string()))?;
     let ifaddrmsg = make_ifaddrmsg();
@@ -46,7 +47,7 @@ pub fn local_ip() -> Result<IpAddr, Error> {
         .send(netlink_message)
         .map_err(|err| Error::StrategyError(err.to_string()))?;
 
-    let mut addrs = Vec::<Ipv4Addr>::with_capacity(1);
+    let mut addrs = Vec::<(String, IpAddr)>::new();
 
     for response in netlink_socket.iter(false) {
         let header: Nlmsghdr<_, Ifaddrmsg> = response.map_err(|_| {
@@ -71,30 +72,61 @@ pub fn local_ip() -> Result<IpAddr, Error> {
             ))
         })?;
 
-        if RtScope::from(p.ifa_scope) != RtScope::Universe {
+        if match (scope, RtScope::from(p.ifa_scope)) {
+            (Some(scope_filter), route_scope) => scope_filter != route_scope,
+            _ => false,
+        } {
             continue;
         }
 
-        for rtattr in p.rtattrs.iter() {
-            if rtattr.rta_type == Ifa::Local {
-                addrs.push(Ipv4Addr::from(u32::from_be(
-                    rtattr.get_payload_as::<u32>().map_err(|_| {
-                        Error::StrategyError(String::from(
-                            "An error ocurred retrieving Netlink's route payload attribute",
-                        ))
-                    })?,
-                )));
-            }
-        }
+        //if RtScope::from(p.ifa_scope) != RtScope::Universe {
+        //    continue;
+        //}
+
+        let route_attr = p
+            .rtattrs
+            .iter()
+            .find(|rtattr| rtattr.rta_type == Ifa::Local)
+            .ok_or_else(|| {
+                Error::StrategyError(String::from(
+                    "An error ocurred retrieving Netlink's route attribute",
+                ))
+            })?;
+
+        let label_attr = p
+            .rtattrs
+            .iter()
+            .find(|rtattr| rtattr.rta_type == Ifa::Label)
+            .ok_or_else(|| {
+                Error::StrategyError(String::from(
+                    "An error ocurred retrieving Netlink's label attribute",
+                ))
+            })?;
+
+        let address = IpAddr::V4(Ipv4Addr::from(u32::from_be(
+            route_attr.get_payload_as::<u32>().map_err(|_| {
+                Error::StrategyError(String::from(
+                    "An error ocurred reading Netlink's route payload attribute",
+                ))
+            })?,
+        )));
+
+        let label_bytes: Vec<u8> = label_attr.get_payload_as::<Vec<u8>>().map_err(|_| {
+            Error::StrategyError(String::from(
+                "An error ocurred reading Netlink's label attribute",
+            ))
+        })?;
+
+        let label_str = CStr::from_bytes_with_nul(&label_bytes).map_err(|_| {
+            Error::StrategyError(String::from(
+                "An errorr occured decoding Netlink's label string",
+            ))
+        })?;
+
+        addrs.push((label_str.to_str().unwrap().to_string(), address));
     }
 
-    if let Some(local_ip) = addrs.first() {
-        let ipaddr = IpAddr::V4(local_ip.to_owned());
-
-        return Ok(ipaddr);
-    }
-
-    Err(Error::LocalIpAddressNotFound)
+    Ok(addrs)
 }
 
 /// `ifaddrs` struct raw pointer alias

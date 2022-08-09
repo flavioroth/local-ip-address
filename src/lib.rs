@@ -58,6 +58,7 @@ pub enum Error {
 
 #[cfg(target_os = "linux")]
 pub mod linux;
+
 #[cfg(target_os = "linux")]
 pub use crate::linux::*;
 
@@ -86,7 +87,17 @@ pub use crate::windows::*;
 pub fn local_ip() -> Result<IpAddr, Error> {
     #[cfg(target_os = "linux")]
     {
-        crate::linux::local_ip()
+        use std::env;
+        use neli::consts::rtnl::RtScope;
+
+        // On Linux, return the first address with a route scope of UNIVERSE
+        let ifas = crate::linux::local_ips_with_route_scope(Some(RtScope::Universe))?;
+
+        if let Some((_, ipaddr)) = ifas.into_iter().next() {
+            return Ok(ipaddr);
+        }
+
+        Err(Error::PlatformNotSupported(env::consts::OS.to_string()))
     }
 
     #[cfg(target_os = "macos")]
@@ -113,6 +124,23 @@ pub fn local_ip() -> Result<IpAddr, Error> {
         }
 
         Err(Error::PlatformNotSupported(env::consts::OS.to_string()))
+    }
+}
+
+pub fn get_interfaces() -> Result<Vec<(String, IpAddr)>, Error> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::linux::local_ips_with_route_scope(None)
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::list_afinet_netifas()
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows::list_afinet_netifas()
     }
 }
 
