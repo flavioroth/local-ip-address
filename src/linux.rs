@@ -79,10 +79,6 @@ pub fn local_ips_with_route_scope(scope: Option<RtScope>) -> Result<Vec<(String,
             continue;
         }
 
-        //if RtScope::from(p.ifa_scope) != RtScope::Universe {
-        //    continue;
-        //}
-
         let route_attr = p
             .rtattrs
             .iter()
